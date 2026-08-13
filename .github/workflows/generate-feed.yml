@@ -37,15 +37,16 @@ jobs:
         run: cd scripts && npm test
 
       - name: Generate feeds
-        env:
-          X_BEARER_TOKEN: ${{ secrets.X_BEARER_TOKEN }}
-          POD2TXT_API_KEY: ${{ secrets.POD2TXT_API_KEY }}
+        run: cd scripts && node generate-feed.js --blogs-only
+
+      - name: Sync X and podcast feeds from upstream
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.mode }}" != "all" ]; then
-            cd scripts && node generate-feed.js --${{ inputs.mode }}
-          else
-            cd scripts && node generate-feed.js
-          fi
+          curl --fail --location --retry 2 --retry-all-errors \
+            --output feed-x.json \
+            https://raw.githubusercontent.com/zarazhangrui/follow-builders/main/feed-x.json
+          curl --fail --location --retry 2 --retry-all-errors \
+            --output feed-podcasts.json \
+            https://raw.githubusercontent.com/zarazhangrui/follow-builders/main/feed-podcasts.json
 
       - name: Commit and push feeds
         run: |
