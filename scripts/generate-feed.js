@@ -16,6 +16,7 @@
 import { readFile, writeFile } from "fs/promises";
 import { existsSync } from "fs";
 import { join } from "path";
+import { pathToFileURL } from "url";
 
 // -- Constants ---------------------------------------------------------------
 
@@ -739,6 +740,20 @@ function parseClaudeBlogIndex(html) {
   return articles;
 }
 
+function extractPublishedAtFromHtmlMetadata(html) {
+  const metaTags = html.match(/<meta\b[^>]*>/gi) || [];
+  for (const tag of metaTags) {
+    const isPublicationDate = /(?:property|name)=["'](?:article:published_time|datePublished|publish_date)["']/i.test(
+      tag,
+    );
+    const content = tag.match(/content=["']([^"']+)["']/i);
+    if (isPublicationDate && content) return content[1];
+  }
+
+  const timeTag = html.match(/<time\b[^>]*datetime=["']([^"']+)["']/i);
+  return timeTag ? timeTag[1] : null;
+}
+
 // Extracts the main text content from an Anthropic Engineering article page.
 // Tries the embedded JSON first (Next.js SSR data), then falls back to
 // stripping HTML tags from the article body.
@@ -775,7 +790,14 @@ function extractAnthropicArticleContent(html) {
         }
         content = textParts.join("\n\n");
       }
-      if (content) return { title, author, publishedAt, content };
+      if (content) {
+        return {
+          title,
+          author,
+          publishedAt: publishedAt || extractPublishedAtFromHtmlMetadata(html),
+          content,
+        };
+      }
     } catch {
       // Fall through to HTML stripping
     }
@@ -803,7 +825,12 @@ function extractAnthropicArticleContent(html) {
     .replace(/\s+/g, " ")
     .trim();
 
-  return { title, author, publishedAt, content };
+  return {
+    title,
+    author,
+    publishedAt: publishedAt || extractPublishedAtFromHtmlMetadata(html),
+    content,
+  };
 }
 
 // Extracts the main text content from a Claude Blog article page.
@@ -880,14 +907,25 @@ function extractClaudeBlogArticleContent(html) {
       .trim();
   }
 
-  return { title, author, publishedAt, content };
+  return {
+    title,
+    author,
+    publishedAt: publishedAt || extractPublishedAtFromHtmlMetadata(html),
+    content,
+  };
+}
+
+function normalizePublishedAt(value) {
+  if (typeof value !== "string" || !value.trim()) return null;
+  const timestamp = Date.parse(value);
+  return Number.isNaN(timestamp) ? null : new Date(timestamp).toISOString();
 }
 
 // Main blog fetching orchestrator.
 // For each blog source in the config, discovers new articles, deduplicates
 // against previously seen URLs, fetches full article content, and returns
 // the results for feed-blogs.json.
-async function fetchBlogContent(blogs, state, errors) {
+export async function fetchBlogContent(blogs, state, errors) {
   const results = [];
   const cutoff = new Date(Date.now() - BLOG_LOOKBACK_HOURS * 60 * 60 * 1000);
 
@@ -969,13 +1007,23 @@ async function fetchBlogContent(blogs, state, errors) {
             continue;
           }
 
+          const publishedAt = normalizePublishedAt(
+            extracted.publishedAt || article.publishedAt,
+          );
+          if (!publishedAt) {
+            errors.push(
+              `Blog: Skipping article without valid publication date: ${article.url}`,
+            );
+            continue;
+          }
+
           // Merge extracted data with what we already have from the index
           results.push({
             source: "blog",
             name: blog.name,
             title: extracted.title || article.title || "Untitled",
             url: article.url,
-            publishedAt: extracted.publishedAt || article.publishedAt || null,
+            publishedAt,
             author: extracted.author || "",
             description: article.description || "",
             content: extracted.content,
@@ -1132,7 +1180,9 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error("Feed generation failed:", err.message);
-  process.exit(1);
-});
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((err) => {
+    console.error("Feed generation failed:", err.message);
+    process.exit(1);
+  });
+}
